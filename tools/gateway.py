@@ -67,10 +67,8 @@ class LineReader:
 
 
 class HubConnection(LineReader):
-    def __init__(self, clients, log, name):
+    def __init__(self, name):
         super().__init__(name)
-        self.clients = clients
-        self.log = log
         self.charging = False
         self.charged = 0
 
@@ -84,17 +82,17 @@ class HubConnection(LineReader):
         pass
 
     def read_line(self, line, line_terminators):
-        self.log.input(line)
+        log.input(line)
         self.parse_line(line.decode('utf-8', 'ignore'))
         closed_clients = []
-        for client in self.clients:
+        for client in clients:
             try:
                 client.write_line(line, line_terminators)
             except:
                 closed_clients.append(client)
                 client.close()
         for client in closed_clients:
-            self.clients.remove(client)
+            clients.remove(client)
 
     def parse_line(self, line):
         try:
@@ -254,8 +252,8 @@ class HubConnection(LineReader):
 
 
 class SerialHubConnection(HubConnection):
-    def __init__(self, port, clients, log):
-        super().__init__(clients, log, f"SerialHubConnection ({port})")
+    def __init__(self, port):
+        super().__init__(f"SerialHubConnection ({port})")
         self.port = serial.Serial(port)
 
     def read(self):
@@ -275,8 +273,8 @@ class SerialHubConnection(HubConnection):
 
 
 class BluetoothHubConnection(HubConnection):
-    def __init__(self, device, clients, log):
-        super().__init__(clients, log, f"BluetoothClientConnection ({device})")
+    def __init__(self, device):
+        super().__init__(f"BluetoothClientConnection ({device})")
         self.socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
         self.socket.connect((device, 1))
 
@@ -297,8 +295,8 @@ class BluetoothHubConnection(HubConnection):
 
 
 class FileHubConnection(HubConnection):
-    def __init__(self, path, clients, log):
-        super().__init__(clients, log, f"FileHubConnection ({path})")
+    def __init__(self, path):
+        super().__init__(f"FileHubConnection ({path})")
         self.file = open(path, 'rb')
 
     def read(self):
@@ -327,36 +325,15 @@ class FileHubConnection(HubConnection):
 
 
 class ClientConnection(LineReader):
-    def __init__(self, clients, hub, name, log):
+    def __init__(self, name):
         super().__init__(name)
-        self.clients = clients
-        self.hub = hub
         self.name = name
-        self.log = log
-        self.clients.append(self)
-
-    def run(self):
-        line = bytearray()
-        try:
-            while True:
-                data = self.read()
-                if not data:
-                    break
-                if data == b'\r':
-                    self.log.output(line)
-                    print(f"{color:33}REQUEST:{color:0} ", line.decode('utf-8', 'ignore'), end=f"{esc:K}\n")
-                    line.clear()
-                else:
-                    line += data
-                self.hub.write(data)
-        finally:
-            self.clients.remove(self)
-            self.close()
+        clients.append(self)
 
     def read_line(self, line, line_terminators):
         print(f"{color:33}REQUEST:{color:0} ", line.decode('utf-8', 'ignore'), end=f"{esc:K}\n")
-        self.log.output(line)
-        self.hub.write_line(line, line_terminators)
+        log.output(line)
+        hub.write_line(line, line_terminators)
 
     def read(self):
         pass
@@ -366,8 +343,8 @@ class ClientConnection(LineReader):
 
 
 class SocketClientConnection(ClientConnection):
-    def __init__(self, client_socket, clients, hub, log):
-        super().__init__(clients, hub, f"SocketClientConnection {client_socket.getpeername()}", log)
+    def __init__(self, client_socket):
+        super().__init__(f"SocketClientConnection {client_socket.getpeername()}")
         self.client_socket = client_socket
 
     def read(self):
@@ -385,7 +362,7 @@ class SocketClientConnection(ClientConnection):
 
 
 class BluetoothClientConnection(SocketClientConnection):
-    def __init__(self, clients, hub, log):
+    def __init__(self):
         self.server_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
         self.server_socket.bind(('', bluetooth.PORT_ANY))
         self.server_socket.listen(1)
@@ -400,7 +377,7 @@ class BluetoothClientConnection(SocketClientConnection):
         client_socket, client_info = self.server_socket.accept()
         print("Accepted connection from", client_info)
 
-        super().__init__(client_socket, clients, hub, log)
+        super().__init__(client_socket)
 
     def close(self):
         super().close()
@@ -434,23 +411,24 @@ class FileLogger:
 
 
 class ServerSocket:
-    def __init__(self, port, clients, hub, log):
+    def __init__(self, port):
         print(f"Listing on port localhost:{port}")
         self.server_socket = socket.create_server(('localhost', port))
-        self.clients = clients
-        self.hub = hub
-        self.log = log
 
     def fileno(self):
         return self.server_socket.fileno()
 
     def data_ready(self):
         client_socket, client_address = self.server_socket.accept()
-        client = SocketClientConnection(client_socket, self.clients, self.hub, self.log)
+        client = SocketClientConnection(client_socket)
 
     def close(self):
         self.server_socket.close()
 
+
+clients = []
+log = NoopLogger()
+hub = HubConnection("NoOpHubConnetion")
 
 def start():
     parser = argparse.ArgumentParser(
@@ -471,26 +449,20 @@ def start():
 
     args = parser.parse_args()
 
-    clients = []
-
-    if args.nolog:
-        log = NoopLogger()
-    else:
+    if not args.nolog:
         log = FileLogger(args.log)
 
     if args.tty:
-        hub = SerialHubConnection(args.tty, clients, log)
+        hub = SerialHubConnection(args.tty)
     elif args.device:
-        hub = BluetoothHubConnection(args.device, clients, log)
+        hub = BluetoothHubConnection(args.device)
     elif args.file:
-        hub = FileHubConnection(args.file, clients, log)
+        hub = FileHubConnection(args.file)
 
     if args.bluetooth:
-        bluetooth_client = BluetoothClientConnection(clients, hub, log)
+        bluetooth_client = BluetoothClientConnection()
 
-    server = ServerSocket(args.port, clients, hub, log)
-
-    inputs = [server]
+    server = ServerSocket(args.port)
 
     try:
         while True:
